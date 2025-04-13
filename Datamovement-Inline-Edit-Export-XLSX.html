@@ -1,0 +1,391 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Flight Movement Log - Inline Editing</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    input, select, button { margin: 5px; padding: 5px; }
+    input[type="text"], select { text-transform: uppercase; }
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: center; }
+    th { background-color: #f2f2f2; }
+    .form-group { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .form-label { font-size: 12px; margin-top: -10px; text-align: center; width: 100%; }
+    .input-wrapper { display: flex; flex-direction: column; align-items: center; }
+    .nav-buttons { display: flex; align-items: center; gap: 5px; margin-top: 10px; }
+  </style>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+</head>
+<body>
+  
+    <h2 style='display: flex; align-items: center; justify-content: space-between; gap: 10px;'>
+      <span>Flight Movement Log (Inline Editing)</span>
+      <input type="date" id="logDate" style="font-size: 16px; padding: 4px;" />
+    </h2>
+    
+  <div id="formContainer"></div>
+  
+    <div style="margin-top: 10px; display: flex; gap: 20px; align-items: center;">
+      <label>Filter Company: <input type="text" id="filterCompany" oninput="applyFilters()" /></label>
+      <label>Filter Remarks:
+        <select id="filterRemarks" onchange="applyFilters()">
+          <option value="">-- All --</option>
+          <option value="DEPARTURE">DEPARTURE</option>
+          <option value="ARRIVAL">ARRIVAL</option>
+          <option value="DIVERT">DIVERT</option>
+          <option value="DEPARTURE (M)">DEPARTURE (M)</option>
+          <option value="ARRIVAL (M)">ARRIVAL (M)</option>
+          <option value="OTHER">OTHER</option>
+        </select>
+      </label>
+    </div>
+    <div class="nav-buttons">
+    
+    <button type="button" onclick="eraseSelected()">Erase Selected</button>
+    <button type="button" onclick="exportSelectedToExcel()">Export Selected to Excel</button>
+    <button type="button" onclick="addForm()">&#x25BC;</button>
+    <button type="button" onclick="submitAllForms()">Submit All</button>
+  </div>
+
+  <table id="flightTable">
+    <thead>
+      <tr>
+        <th>No</th>
+        <th>Flight ID</th><th>Aircraft Type</th>
+        <th>Aircraft</th>
+        <th>Type</th>
+        <th>Company</th>
+        <th>Origin</th>
+        <th>Dest</th>
+        <th>Block Off</th>
+        <th>ATD</th>
+        <th>ATA</th>
+        <th>Block On</th>
+        <th>PAX Arr</th>
+        <th>PAX Dept</th>
+        <th>Stand</th>
+        <th>Remarks</th><th>Erase</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <script>
+    let formIndex = 0;
+
+    const headers = ["aircraftType", 
+      "flightId", "aircraft", "type", "company", "origin", "dest",
+      "blockOff", "atd", "ata", "blockOn", "paxArr", "paxDept", "stand", "remarks"
+    ];
+
+    function getRemarksColor(remark) {
+      switch (remark) {
+        case "DEPARTURE": return "#FFFFFF";
+        case "ARRIVAL": return "#0066FF";
+        case "DIVERT": return "#FFCC99";
+        case "DEPARTURE (M)": return "#006600";
+        case "ARRIVAL (M)": return "#336666";
+        case "OTHER": return "#CCCCCC";
+        default: return "#FFFFFF";
+      }
+    }
+
+    function createInput(name, placeholder, type = "text", label = "") {
+      const wrapper = document.createElement("div");
+      wrapper.className = "input-wrapper";
+      const input = document.createElement("input");
+      input.type = type;
+      input.name = name;
+      input.placeholder = placeholder;
+      if (name === "aircraft") {
+        input.pattern = "PK-[A-Z]{3}";
+        input.title = "Format: PK-XXX";
+      }
+      if (label) {
+        const labelEl = document.createElement("span");
+        labelEl.className = "form-label";
+        labelEl.textContent = `${label} (UTC)`;
+        wrapper.appendChild(labelEl);
+      }
+      wrapper.appendChild(input);
+      return wrapper;
+    }
+
+    function createSelect(name) {
+      const select = document.createElement("select");
+      select.name = name;
+      const options = ["", "DEPARTURE", "ARRIVAL", "DIVERT", "DEPARTURE (M)", "ARRIVAL (M)", "OTHER"];
+      options.forEach(val => {
+        const option = document.createElement("option");
+        option.value = val;
+        option.textContent = val || "-- Remarks --";
+        select.appendChild(option);
+      });
+      const wrapper = document.createElement("div");
+      wrapper.className = "input-wrapper";
+      wrapper.appendChild(select);
+      return wrapper;
+    }
+
+    function createStandSelect(name) {
+      const select = document.createElement("select");
+      select.name = name;
+      const defaultOption = document.createElement("option");
+      defaultOption.value = "";
+      defaultOption.textContent = "-- Stand No. --";
+      select.appendChild(defaultOption);
+      for (let i = 1; i <= 12; i++) {
+        const option = document.createElement("option");
+        option.value = i;
+        option.textContent = i;
+        select.appendChild(option);
+      }
+      const wrapper = document.createElement("div");
+      wrapper.className = "input-wrapper";
+      wrapper.appendChild(select);
+      return wrapper;
+    }
+
+    function handleArrowNavigation(inputElements) {
+      inputElements.forEach((input, index) => {
+        input.addEventListener("keydown", function (e) {
+          if (e.key === "ArrowLeft" && this.selectionStart === 0 && index > 0) {
+            e.preventDefault();
+            inputElements[index - 1].focus();
+          } else if (e.key === "ArrowRight" && this.selectionStart === this.value.length && index < inputElements.length - 1) {
+            inputElements[index + 1].focus();
+          }
+        });
+      });
+    }
+
+    function addForm() {
+      const container = document.getElementById("formContainer");
+      container.innerHTML = "";
+      const wrapper = document.createElement("div");
+      wrapper.className = "form-group";
+
+      const aircraftTypeSelect = document.createElement("select");
+aircraftTypeSelect.name = "aircraftType";
+["", "Fixed Wing", "Rotary"].forEach(opt => {
+  const option = document.createElement("option");
+  option.value = opt;
+  option.textContent = opt || "-- Aircraft Type --";
+  aircraftTypeSelect.appendChild(option);
+});
+const aircraftTypeWrapper = document.createElement("div");
+aircraftTypeWrapper.className = "input-wrapper";
+aircraftTypeWrapper.appendChild(aircraftTypeSelect);
+const inputs = [aircraftTypeWrapper,
+        createInput("flightId", "Flight ID"),
+        createInput("aircraft", "Aircraft Reg"),
+        createInput("type", "Type"),
+        createInput("company", "Company"),
+        createInput("origin", "Origin"),
+        createInput("dest", "Destination"),
+        createInput("blockOff", "", "time", "Block Off"),
+        createInput("atd", "", "time", "ATD"),
+        createInput("ata", "", "time", "ATA"),
+        createInput("blockOn", "", "time", "Block On"),
+        createInput("paxArr", "PAX Arr", "number"),
+        createInput("paxDept", "PAX Dept", "number"),
+        createStandSelect("stand"),
+        createSelect("remarks")
+      ];
+
+      inputs.forEach(el => wrapper.appendChild(el));
+      container.appendChild(wrapper);
+
+      const fields = wrapper.querySelectorAll("input, select");
+      handleArrowNavigation(fields);
+    }
+
+    function isFormFilled(form) {
+      return Array.from(form.querySelectorAll("input, select")).some(input => input.value.trim() !== "");
+    }
+
+    function submitAllForms() {
+      document.querySelectorAll("#formContainer .form-group").forEach(form => {
+        if (!isFormFilled(form)) return;
+
+        const data = {};
+        form.querySelectorAll("input, select").forEach(input => {
+          const val = input.value.trim();
+          data[input.name] = val === "" ? "-" : val.toUpperCase();
+        if (input.name === "aircraftType") data[input.name] = val || "-";
+        });
+
+        const table = document.querySelector("#flightTable tbody");
+        const row = document.createElement("tr");
+        row.innerHTML = `<td>?</td>` + headers.map(h => {
+          return `<td class="editable" data-key="${h}">${data[h]}</td>`;
+        }).join("");
+        table.appendChild(row);
+        const eraseCell = document.createElement("td");
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        eraseCell.appendChild(checkbox);
+        row.appendChild(eraseCell);
+        reindexTable();
+        applyInlineEditing();
+      });
+
+      document.getElementById("formContainer").innerHTML = "";
+      addForm();
+    }
+
+    function reindexTable() {
+      document.querySelectorAll("#flightTable tbody tr").forEach((row, idx) => {
+        row.children[0].textContent = idx + 1;
+      });
+    }
+
+    function applyInlineEditing() {
+      document.querySelectorAll("td.editable").forEach(cell => {
+        cell.onclick = function () {
+          if (cell.querySelector("input") || cell.querySelector("select")) return;
+
+          const key = cell.dataset.key;
+          const oldValue = cell.textContent;
+          cell.textContent = "";
+
+          let input;
+          if (key === "remarks") {
+            input = document.createElement("select");
+            ["", "DEPARTURE", "ARRIVAL", "DIVERT", "DEPARTURE (M)", "ARRIVAL (M)", "OTHER"].forEach(opt => {
+              const option = document.createElement("option");
+              option.value = opt;
+              option.textContent = opt;
+              if (opt === oldValue) option.selected = true;
+              input.appendChild(option);
+            });
+          } else if (key === "stand") {
+            input = document.createElement("select");
+            for (let i = 1; i <= 12; i++) {
+              const option = document.createElement("option");
+              option.value = i;
+              option.textContent = i;
+              if (String(i) === oldValue) option.selected = true;
+              input.appendChild(option);
+            }
+          } else {
+            input = document.createElement("input");
+            input.type = "text";
+            input.value = oldValue === "-" ? "" : oldValue;
+          }
+
+          input.onblur = () => {
+            const newValue = input.value.trim().toUpperCase() || "-";
+            if (key === "remarks") {
+              cell.style.backgroundColor = getRemarksColor(newValue);
+            }
+            cell.textContent = newValue;
+          };
+
+          input.onkeydown = e => {
+            if (e.key === "Enter") input.blur();
+          };
+
+          cell.appendChild(input);
+          input.focus();
+        };
+      });
+    }
+
+    window.onload = () => addForm();
+  
+    function eraseSelected() {
+      const rows = document.querySelectorAll("#flightTable tbody tr");
+      rows.forEach(row => {
+        const checkbox = row.querySelector("input[type='checkbox']");
+        if (checkbox && checkbox.checked) {
+          row.remove();
+        }
+      });
+      reindexTable();
+    }
+    
+    function applyFilters() {
+      const companyFilter = document.getElementById("filterCompany").value.trim().toUpperCase();
+      const remarksFilter = document.getElementById("filterRemarks").value.trim().toUpperCase();
+      const rows = document.querySelectorAll("#flightTable tbody tr");
+
+      rows.forEach(row => {
+        const company = row.children[4].textContent.toUpperCase();
+        const remarks = row.children[14].textContent.toUpperCase();
+        const matchCompany = !companyFilter || company.includes(companyFilter);
+        const matchRemarks = !remarksFilter || remarks === remarksFilter;
+        row.style.display = (matchCompany && matchRemarks) ? "" : "none";
+      });
+    }
+    
+    
+    function exportSelectedToExcel() {
+      const rows = Array.from(document.querySelectorAll("#flightTable tbody tr"))
+        .filter(row => row.querySelector("input[type='checkbox']")?.checked);
+
+      if (rows.length === 0) {
+        alert("Pilih data terlebih dahulu untuk diekspor.");
+        return;
+      }
+
+      const headers = Array.from(document.querySelectorAll("#flightTable thead th"))
+        .slice(0, -1) // exclude the checkbox header
+        .map(th => th.textContent.trim());
+
+      const data = [headers];
+
+      rows.forEach(row => {
+        const cells = Array.from(row.querySelectorAll("td")).slice(1, -1); // exclude No and checkbox
+        const rowData = cells.map(cell => cell.textContent.trim());
+        data.push(rowData);
+      });
+
+      const worksheet = XLSX.utils.aoa_to_sheet(data);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, "Flight Movements");
+
+      XLSX.writeFile(workbook, "Selected_Flight_Movements.xlsx");
+    }
+    
+      const rows = Array.from(document.querySelectorAll("#flightTable tbody tr"))
+        .filter(row => row.querySelector("input[type='checkbox']")?.checked);
+
+      if (rows.length === 0) {
+        alert("Pilih data terlebih dahulu untuk diekspor.");
+        return;
+      }
+
+      const headers = Array.from(document.querySelectorAll("#flightTable thead th"))
+        .slice(0, -1) // exclude the checkbox header
+        .map(th => th.textContent.trim());
+
+      const csvRows = [];
+      csvRows.push(headers.join(","));
+
+      rows.forEach(row => {
+        const cells = Array.from(row.querySelectorAll("td")).slice(1, -1); // skip No and checkbox
+        const rowData = cells.map(cell => `"${cell.textContent.trim()}"`);
+        csvRows.push(rowData.join(","));
+      });
+
+      const csvData = csvRows.join("\n");
+      const blob = new Blob([csvData], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "Selected_Flight_Movements.csv";
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+    </script>
+
+
+
+</body>
+</html>
